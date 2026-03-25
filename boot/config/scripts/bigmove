@@ -1,0 +1,311 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# ==============================
+# CONFIG / STATE
+# ==============================
+
+APP_NAME="bigmove"
+STATE_DIR="${BIGMOVE_STATE_DIR:-/var/tmp/${APP_NAME}}"
+LOG_FILE="${BIGMOVE_LOG_FILE:-/var/log/${APP_NAME}.log}"
+
+mkdir -p "$STATE_DIR"
+mkdir -p "$(dirname "$LOG_FILE")"
+
+PID_FILE="$STATE_DIR/${APP_NAME}.pid"
+STATUS_FILE="$STATE_DIR/status.txt"
+# Control files let separate invocations like --status, --stop, and --stop-now
+# interact with the long-running background worker.
+STOP_FILE="$STATE_DIR/stop_requested"
+STOP_NOW_FILE="$STATE_DIR/stop_now_requested"
+RSYNC_PID_FILE="$STATE_DIR/rsync.pid"
+RSYNC_FIFO="$STATE_DIR/rsync_output.fifo"
+
+# ==============================
+# USAGE
+# ==============================
+
+usage() {
+  echo "Usage:"
+  echo "  ${APP_NAME} <diskSRC> <diskDEST> <SIZE> <PATH> [--foreground]"
+  echo "  ${APP_NAME} --status"
+  echo "  ${APP_NAME} --stop"
+  echo "  ${APP_NAME} --stop-now"
+  echo
+  echo "Arguments:"
+  echo "  <SIZE>   Minimum folder size to move, for example 100G, 500M, or 1T"
+  echo "  <PATH>   Folder path under each disk mount, for example TV or media/shows"
+  exit 1
+}
+
+# ==============================
+# STATUS COMMAND
+# ==============================
+
+if [[ "${1:-}" == "--status" ]]; then
+  if [[ -f "$PID_FILE" ]]; then
+    PID=$(cat "$PID_FILE")
+
+    if ps -p "$PID" > /dev/null 2>&1; then
+      echo "${APP_NAME} RUNNING (PID: $PID)"
+      echo
+
+      [[ -f "$STATE_DIR/current_pct" ]] && echo "Progress: $(cat "$STATE_DIR/current_pct")%"
+      [[ -f "$STATE_DIR/current_speed" ]] && echo "Speed   : $(cat "$STATE_DIR/current_speed")"
+      [[ -f "$STATE_DIR/current_eta" ]] && echo "ETA     : $(cat "$STATE_DIR/current_eta")"
+      [[ -f "$STATE_DIR/current_folder" ]] && echo "Current : $(cat "$STATE_DIR/current_folder")"
+      [[ -f "$STOP_FILE" ]] && echo "Stop    : requested after current successful folder"
+      [[ -f "$STOP_NOW_FILE" ]] && echo "Stop    : immediate stop requested"
+
+      echo
+      echo "---- Last log ----"
+      tail -n 10 "$LOG_FILE"
+      exit 0
+    else
+      echo "PID exists but not running"
+      exit 1
+    fi
+  else
+    echo "${APP_NAME} NOT running"
+    exit 0
+  fi
+fi
+
+if [[ "${1:-}" == "--stop" ]]; then
+  if [[ -f "$PID_FILE" ]]; then
+    PID=$(cat "$PID_FILE")
+
+    if ps -p "$PID" > /dev/null 2>&1; then
+      touch "$STOP_FILE"
+      echo "Stop requested."
+      echo "${APP_NAME} will stop when the next top folder has finished copying successfully."
+      echo "Use --stop-now if you need a faster stop."
+      exit 0
+    fi
+  fi
+
+  echo "${APP_NAME} is not running"
+  exit 1
+fi
+
+if [[ "${1:-}" == "--stop-now" ]]; then
+  if [[ -f "$PID_FILE" ]]; then
+    PID=$(cat "$PID_FILE")
+
+    if ps -p "$PID" > /dev/null 2>&1; then
+      touch "$STOP_NOW_FILE"
+
+      if [[ -f "$RSYNC_PID_FILE" ]]; then
+        RSYNC_PID=$(cat "$RSYNC_PID_FILE")
+        if ps -p "$RSYNC_PID" > /dev/null 2>&1; then
+          kill -INT "$RSYNC_PID" 2>/dev/null || true
+        fi
+      fi
+
+      echo "Immediate stop requested. ${APP_NAME} will halt without deleting the current source folder."
+      exit 0
+    fi
+  fi
+
+  echo "${APP_NAME} is not running"
+  exit 1
+fi
+
+# ==============================
+# PARAM VALIDATION
+# ==============================
+
+if [[ $# -lt 3 ]]; then
+  usage
+fi
+
+SRC_DISK="$1"
+DEST_DISK="$2"
+THRESHOLD="$3"
+RELATIVE_PATH="${4:-TV}"
+MODE="${5:-live}"
+
+if [[ ! "$THRESHOLD" =~ ^[0-9]+[GMT]$ ]]; then
+  echo "Invalid SIZE format"
+  exit 1
+fi
+
+SRC="/mnt/${SRC_DISK}/${RELATIVE_PATH}"
+DEST="/mnt/${DEST_DISK}/${RELATIVE_PATH}"
+
+[[ -d "$SRC" ]] || { echo "Source not found"; exit 1; }
+mkdir -p "$DEST"
+
+# ==============================
+# BACKGROUND LAUNCH
+# ==============================
+
+if [[ "$MODE" != "--foreground" ]]; then
+  echo "Starting ${APP_NAME} in background..."
+
+  nohup bash "$0" "$@" --foreground > "$LOG_FILE" 2>&1 &
+
+  PID=$!
+  echo "$PID" > "$PID_FILE"
+
+  echo "Started (PID: $PID)"
+  echo "Log: $LOG_FILE"
+  exit 0
+fi
+
+# ==============================
+# RESET STATE
+# ==============================
+
+rm -f "$STATE_DIR"/current_*
+rm -f "$STOP_FILE"
+rm -f "$STOP_NOW_FILE"
+rm -f "$RSYNC_PID_FILE"
+rm -f "$RSYNC_FIFO"
+echo "START $(date)" > "$STATUS_FILE"
+
+# ==============================
+# SIZE CONVERSION
+# ==============================
+
+to_bytes() {
+  num=${1::-1}
+  unit=${1: -1}
+
+  case "$unit" in
+    G) echo $((num * 1024 * 1024 * 1024)) ;;
+    M) echo $((num * 1024 * 1024)) ;;
+    T) echo $((num * 1024 * 1024 * 1024 * 1024)) ;;
+  esac
+}
+
+THRESHOLD_BYTES=$(to_bytes "$THRESHOLD")
+
+# ==============================
+# TOTAL SIZE SCAN
+# ==============================
+
+TOTAL_BYTES=0
+
+while IFS= read -r -d '' DIR; do
+  SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
+  if (( SIZE_BYTES >= THRESHOLD_BYTES )); then
+    TOTAL_BYTES=$((TOTAL_BYTES + SIZE_BYTES))
+  fi
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0)
+
+echo "$TOTAL_BYTES" > "$STATE_DIR/total_bytes"
+echo 0 > "$STATE_DIR/completed_bytes"
+
+# ==============================
+# PROCESS
+# ==============================
+
+find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' DIR; do
+
+  NAME=$(basename "$DIR")
+  SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
+
+  if (( SIZE_BYTES < THRESHOLD_BYTES )); then
+    continue
+  fi
+
+  echo "$NAME" > "$STATE_DIR/current_folder"
+
+  echo "Processing: $NAME" | tee "$STATUS_FILE"
+
+  rm -f "$RSYNC_PID_FILE"
+  rm -f "$RSYNC_FIFO"
+  mkfifo "$RSYNC_FIFO"
+
+  # Feed rsync output through a FIFO so we can both log/progress-parse it and keep
+  # the real rsync PID available for --stop-now to interrupt directly.
+  tee -a "$LOG_FILE" < "$RSYNC_FIFO" | while read -r line; do
+    if [[ "$line" =~ ([0-9,]+)[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z/]+)[[:space:]]+([0-9:]+) ]]; then
+      echo "${BASH_REMATCH[2]}" > "$STATE_DIR/current_pct"
+      echo "${BASH_REMATCH[3]}" > "$STATE_DIR/current_speed"
+      echo "${BASH_REMATCH[4]}" > "$STATE_DIR/current_eta"
+    fi
+  done &
+  READER_PID=$!
+
+  rsync -a --info=progress2 --no-inc-recursive \
+    --partial --append-verify --inplace \
+    "$DIR/" "$DEST/$NAME/" > "$RSYNC_FIFO" 2>&1 &
+  RSYNC_PID=$!
+  echo "$RSYNC_PID" > "$RSYNC_PID_FILE"
+
+  if [[ -f "$STOP_NOW_FILE" ]]; then
+    kill -INT "$RSYNC_PID" 2>/dev/null || true
+  fi
+
+  if wait "$RSYNC_PID"; then
+    RSYNC_STATUS=0
+  else
+    RSYNC_STATUS=$?
+  fi
+
+  wait "$READER_PID" || true
+  rm -f "$RSYNC_PID_FILE"
+  rm -f "$RSYNC_FIFO"
+
+  if [[ -f "$STOP_NOW_FILE" ]]; then
+    # Immediate stop preserves partial destination data and skips source deletion.
+    echo "STOP-NOW requested during sync of $NAME" | tee -a "$LOG_FILE"
+    echo "STOPPED $(date)" > "$STATUS_FILE"
+    rm -f "$PID_FILE"
+    exit 0
+  fi
+
+  if (( RSYNC_STATUS != 0 )); then
+    echo "ERROR: rsync failed for $NAME" | tee -a "$LOG_FILE"
+    echo "ERROR $(date)" > "$STATUS_FILE"
+    rm -f "$PID_FILE"
+    exit "$RSYNC_STATUS"
+  fi
+
+  # ---- Verify ----
+  SRC_SIZE=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
+  DEST_SIZE=$(du -s --block-size=1 "$DEST/$NAME" | awk '{print $1}')
+
+  if [[ "$SRC_SIZE" != "$DEST_SIZE" ]]; then
+    echo "ERROR: size mismatch — skipping delete"
+    continue
+  fi
+
+  # Only delete the source after a completed rsync and a matching size check.
+  rm -rf "$DIR"
+
+  # ---- Update totals ----
+  COMPLETED=$(cat "$STATE_DIR/completed_bytes")
+  COMPLETED=$((COMPLETED + SIZE_BYTES))
+  echo "$COMPLETED" > "$STATE_DIR/completed_bytes"
+
+  TOTAL=$(cat "$STATE_DIR/total_bytes")
+  if (( TOTAL > 0 )); then
+    PERCENT=$((COMPLETED * 100 / TOTAL))
+    echo "$PERCENT" > "$STATE_DIR/overall_pct"
+  fi
+
+  if [[ -f "$STOP_FILE" ]]; then
+    # Graceful stop waits for the current top-level folder to finish cleanly.
+    echo "STOP requested after successful sync of $NAME" | tee -a "$LOG_FILE"
+    echo "STOPPED $(date)" > "$STATUS_FILE"
+    rm -f "$PID_FILE"
+    exit 0
+  fi
+
+done
+
+# ==============================
+# CLEANUP
+# ==============================
+
+rm -f "$PID_FILE"
+rm -f "$STOP_FILE"
+rm -f "$STOP_NOW_FILE"
+rm -f "$RSYNC_PID_FILE"
+rm -f "$RSYNC_FIFO"
+echo "DONE $(date)" > "$STATUS_FILE"
+echo "100" > "$STATE_DIR/overall_pct"
