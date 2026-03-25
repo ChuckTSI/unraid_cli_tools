@@ -1,0 +1,58 @@
+#!/bin/bash
+
+set -euo pipefail
+
+INTERVAL=1
+BAR_WIDTH=20
+
+command -v iostat >/dev/null || {
+  echo "ERROR: install sysstat"
+  exit 1
+}
+
+declare -A DISKMAP
+
+# ==============================
+# BUILD DEV MAP (sdX → diskN)
+# ==============================
+# Unraid stores the authoritative mapping in /var/local/emhttp/disks.ini
+
+current_name=""
+while IFS='=' read -r key val; do
+  val="${val//\"/}"
+  if [[ "$key" == "name" ]]; then
+    current_name="$val"
+  elif [[ "$key" == "device" && -n "$val" && -n "$current_name" ]]; then
+    DISKMAP["$val"]="$current_name"
+  fi
+done < /var/local/emhttp/disks.ini
+
+# ==============================
+# OUTPUT
+# ==============================
+
+printf "%-10s %-6s %-8s %-8s %-s\n" "DISK" "UTIL%" "READ" "WRITE" "HEAT"
+
+iostat -dx "$INTERVAL" 1 | awk -v width="$BAR_WIDTH" '
+$1 ~ /^sd/ {
+  dev=$1
+  r=$6
+  w=$7
+  util=$NF
+
+  if (util > 100) util=100
+
+  filled = int((util / 100) * width)
+  bar = ""
+  for (i=0; i<filled; i++) bar=bar "█"
+  for (i=filled; i<width; i++) bar=bar " "
+
+  printf "%s %.0f %.1f %.1f [%s]\n", dev, util, r, w, bar
+}
+' | while read -r dev util r w bar; do
+
+  name="${DISKMAP[$dev]:-$dev}"
+
+  printf "%-10s %-6s %-8s %-8s %s\n" "$name" "$util" "$r" "$w" "$bar"
+
+done | sort -k2 -nr
