@@ -8,9 +8,22 @@ It is designed for cases like:
 - moving large show folders from one disk to another
 - stopping cleanly when a maintenance window or shutdown is needed
 
-Script path:
+Source script path:
 
 - [`boot/config/scripts/bigmove`](../../boot/config/scripts/bigmove)
+
+## Install On Unraid
+
+Do not run the tool directly from `/boot`.
+
+Keep the source file on the flash drive, then copy it into a runnable location at boot:
+
+```bash
+cp /boot/config/scripts/bigmove /usr/local/bin/bigmove
+chmod +x /usr/local/bin/bigmove
+```
+
+Put those commands in `/boot/config/go` so the install persists across reboot.
 
 ## What `bigmove` Does
 
@@ -53,19 +66,19 @@ bigmove --stop-now
 Move show folders in `TV` from `disk1` to `disk2` when they are at least `100G`:
 
 ```bash
-/boot/config/scripts/bigmove disk1 disk2 100G TV
+/usr/local/bin/bigmove disk1 disk2 100G TV
 ```
 
 Move folders under a nested path:
 
 ```bash
-/boot/config/scripts/bigmove disk1 disk2 500G media/shows
+/usr/local/bin/bigmove disk1 disk2 500G media/shows
 ```
 
 Run in the foreground:
 
 ```bash
-/boot/config/scripts/bigmove disk1 disk2 100G TV --foreground
+/usr/local/bin/bigmove disk1 disk2 100G TV --foreground
 ```
 
 ## Status And Stop Controls
@@ -73,19 +86,19 @@ Run in the foreground:
 Check status:
 
 ```bash
-/boot/config/scripts/bigmove --status
+/usr/local/bin/bigmove --status
 ```
 
 Graceful stop after the next top-level folder finishes copying successfully:
 
 ```bash
-/boot/config/scripts/bigmove --stop
+/usr/local/bin/bigmove --stop
 ```
 
 Faster stop that interrupts the active `rsync`, leaves partial destination data in place, and does not delete the current source folder:
 
 ```bash
-/boot/config/scripts/bigmove --stop-now
+/usr/local/bin/bigmove --stop-now
 ```
 
 ## Runtime Files
@@ -107,7 +120,7 @@ Example:
 ```bash
 BIGMOVE_STATE_DIR=/mnt/cache/appdata/bigmove \
 BIGMOVE_LOG_FILE=/mnt/cache/appdata/bigmove/bigmove.log \
-/boot/config/scripts/bigmove disk1 disk2 100G TV
+/usr/local/bin/bigmove disk1 disk2 100G TV
 ```
 
 ## Safety Model

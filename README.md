@@ -10,9 +10,15 @@ This repository holds focused utilities that solve real operational problems on 
 
 Moves large top-level folders from one Unraid disk to another under a shared relative path.
 
-Script path:
+Source script path:
 
 - [`boot/config/scripts/bigmove`](./boot/config/scripts/bigmove)
+
+Install note:
+
+- copy it from `/boot/config/scripts/bigmove` to `/usr/local/bin/bigmove`
+- run `chmod +x /usr/local/bin/bigmove`
+- put those commands in `/boot/config/go` for persistence across reboot
 
 Detailed README:
 
