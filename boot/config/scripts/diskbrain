@@ -1,0 +1,115 @@
+#!/bin/bash
+
+set -euo pipefail
+
+# ==============================
+# CONFIG
+# ==============================
+
+MIN_FREE_GB=50        # don't pick disks below this free space
+WEIGHT_FREE=70        # scoring weight
+WEIGHT_FILL=30
+
+# ==============================
+# USAGE
+# ==============================
+
+usage() {
+  echo "Usage:"
+  echo "  diskbrain [SUBFOLDER] [SIZE]"
+  echo
+  echo "Examples:"
+  echo "  diskbrain TV 40G"
+  echo "  diskbrain Movies"
+  exit 1
+}
+
+SUBFOLDER="${1:-TV}"
+SIZE="${2:-0G}"
+
+# ==============================
+# SIZE CONVERSION
+# ==============================
+
+to_gb() {
+  local val="$1"
+  num=${val::-1}
+  unit=${val: -1}
+
+  case "$unit" in
+    G) echo "$num" ;;
+    M) echo $((num / 1024)) ;;
+    T) echo $((num * 1024)) ;;
+    *) echo 0 ;;
+  esac
+}
+
+REQ_GB=$(to_gb "$SIZE")
+
+# ==============================
+# SCAN DISKS
+# ==============================
+
+printf "%-8s %-8s %-8s %-8s %-8s\n" "DISK" "USED%" "FREE" "SCORE" "PATH"
+
+BEST_DISK=""
+BEST_SCORE=0
+
+for d in /mnt/disk*; do
+  [[ -d "$d" ]] || continue
+
+  DISK=$(basename "$d")
+  TARGET_PATH="$d/$SUBFOLDER"
+
+  # skip parity/invalid mounts
+  if ! mountpoint -q "$d"; then
+    continue
+  fi
+
+  # only consider disks that already have the requested subfolder path
+  if [[ ! -d "$TARGET_PATH" ]]; then
+    continue
+  fi
+
+  # get stats
+  read -r USED FREE <<<$(df -BG "$d" | awk 'NR==2 {gsub("G","",$3); gsub("G","",$4); print $3, $4}')
+  USED_PCT=$(df "$d" | awk 'NR==2 {gsub("%","",$5); print $5}')
+
+  # skip disks with low free space
+  if (( FREE < MIN_FREE_GB )); then
+    continue
+  fi
+
+  # skip if not enough space for request
+  if (( FREE < REQ_GB )); then
+    continue
+  fi
+
+  # scoring
+  SCORE=$(( (FREE * WEIGHT_FREE) + ((100 - USED_PCT) * WEIGHT_FILL) ))
+
+  printf "%-8s %-8s %-8s %-8s %-8s\n" "$DISK" "$USED_PCT%" "${FREE}G" "$SCORE" "$TARGET_PATH"
+
+  if (( SCORE > BEST_SCORE )); then
+    BEST_SCORE=$SCORE
+    BEST_DISK="$DISK"
+  fi
+
+done
+
+echo "----------------------------------------"
+
+if [[ -z "$BEST_DISK" ]]; then
+  echo "No suitable disk found"
+  exit 1
+fi
+
+echo "Selected: $BEST_DISK (score: $BEST_SCORE)"
+
+# ==============================
+# OPTIONAL: RETURN ONLY DISK NAME
+# ==============================
+
+if [[ "${3:-}" == "--quiet" ]]; then
+  echo "$BEST_DISK"
+fi
