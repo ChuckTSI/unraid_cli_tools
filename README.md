@@ -58,6 +58,33 @@ Use the tool-specific README for:
 - subfolder path requirements
 - output details
 
+### `arrayheat`
+
+Shows a live one-shot disk utilization view for Unraid array disks using `iostat`, with disk names mapped from Unraid metadata.
+
+Source script path:
+
+- [`boot/config/scripts/arrayheat`](./boot/config/scripts/arrayheat)
+
+Install note:
+
+- copy it from `/boot/config/scripts/arrayheat` to `/usr/local/bin/arrayheat`
+- run `chmod +x /usr/local/bin/arrayheat`
+- make sure `sysstat` is installed so `iostat` is available
+- put the copy and chmod commands in `/boot/config/go` for persistence across reboot
+
+Detailed README:
+
+- [`docs/arrayheat/README.md`](./docs/arrayheat/README.md)
+
+Use the tool-specific README for:
+
+- what the tool does
+- install and dependency notes
+- usage and example output
+- how disk name mapping works
+- current limits
+
 ## Repository Direction
 
 This repository is meant to grow into a set of simple, dependable Unraid-focused tools.
