@@ -39,6 +39,47 @@ usage() {
   exit 1
 }
 
+read_progress_from_log() {
+  [[ -f "$LOG_FILE" ]] || return 1
+
+  local progress_fields
+  progress_fields=$(tr '\r' '\n' < "$LOG_FILE" | awk '
+    match($0, /[0-9,]+[[:space:]]+[0-9]+%[[:space:]]+[0-9.]+[A-Za-z\/]+[[:space:]]+[0-9:]+/) {
+      progress_line = substr($0, RSTART, RLENGTH)
+    }
+    match($0, /to-chk=[0-9]+\/[0-9]+/) {
+      files_line = substr($0, RSTART, RLENGTH)
+    }
+    END {
+      if (progress_line == "") {
+        exit 1
+      }
+      print progress_line "|" files_line
+    }
+  ') || return 1
+
+  IFS='|' read -r progress_line files_line <<< "$progress_fields"
+
+  if [[ "$progress_line" =~ ([0-9,]+)[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z/]+)[[:space:]]+([0-9:]+) ]]; then
+    local pct="${BASH_REMATCH[2]}"
+    local speed="${BASH_REMATCH[3]}"
+    local eta="${BASH_REMATCH[4]}"
+    local files_progress="-"
+
+    if [[ "$files_line" =~ to-chk=([0-9]+)/([0-9]+) ]]; then
+      local remaining="${BASH_REMATCH[1]}"
+      local total="${BASH_REMATCH[2]}"
+      local checked=$((total - remaining))
+      files_progress="${checked}/${total} checked"
+    fi
+
+    echo "${pct}|${speed}|${eta}|${files_progress}"
+    return 0
+  fi
+
+  return 1
+}
+
 # ==============================
 # STATUS COMMAND
 # ==============================
@@ -48,19 +89,46 @@ if [[ "${1:-}" == "--status" ]]; then
     PID=$(cat "$PID_FILE")
 
     if ps -p "$PID" > /dev/null 2>&1; then
+      CURRENT_PCT="0"
+      CURRENT_SPEED="-"
+      CURRENT_ETA="-"
+      CURRENT_FOLDER="-"
+      OVERALL_PCT="0"
+      FILES_PROGRESS="-"
+
+      [[ -f "$STATE_DIR/current_pct" ]] && CURRENT_PCT=$(cat "$STATE_DIR/current_pct")
+      [[ -f "$STATE_DIR/current_speed" ]] && CURRENT_SPEED=$(cat "$STATE_DIR/current_speed")
+      [[ -f "$STATE_DIR/current_eta" ]] && CURRENT_ETA=$(cat "$STATE_DIR/current_eta")
+      [[ -f "$STATE_DIR/current_folder" ]] && CURRENT_FOLDER=$(cat "$STATE_DIR/current_folder")
+      [[ -f "$STATE_DIR/overall_pct" ]] && OVERALL_PCT=$(cat "$STATE_DIR/overall_pct")
+      [[ -f "$STATE_DIR/current_files" ]] && FILES_PROGRESS=$(cat "$STATE_DIR/current_files")
+
+      if PROGRESS_FIELDS=$(read_progress_from_log); then
+        IFS='|' read -r CURRENT_PCT CURRENT_SPEED CURRENT_ETA FILES_PROGRESS <<< "$PROGRESS_FIELDS"
+      fi
+
+      if [[ -f "$STATE_DIR/current_size_bytes" && -f "$STATE_DIR/completed_bytes" && -f "$STATE_DIR/total_bytes" ]]; then
+        CURRENT_SIZE_BYTES=$(cat "$STATE_DIR/current_size_bytes")
+        COMPLETED_BYTES=$(cat "$STATE_DIR/completed_bytes")
+        TOTAL_BYTES=$(cat "$STATE_DIR/total_bytes")
+
+        if [[ "$CURRENT_PCT" =~ ^[0-9]+$ ]] && [[ "$CURRENT_SIZE_BYTES" =~ ^[0-9]+$ ]] && [[ "$COMPLETED_BYTES" =~ ^[0-9]+$ ]] && [[ "$TOTAL_BYTES" =~ ^[0-9]+$ ]] && (( TOTAL_BYTES > 0 )); then
+          IN_PROGRESS_BYTES=$((CURRENT_SIZE_BYTES * CURRENT_PCT / 100))
+          OVERALL_PCT=$(((COMPLETED_BYTES + IN_PROGRESS_BYTES) * 100 / TOTAL_BYTES))
+        fi
+      fi
+
       echo "${APP_NAME} RUNNING (PID: $PID)"
       echo
 
-      [[ -f "$STATE_DIR/current_pct" ]] && echo "Progress: $(cat "$STATE_DIR/current_pct")%"
-      [[ -f "$STATE_DIR/current_speed" ]] && echo "Speed   : $(cat "$STATE_DIR/current_speed")"
-      [[ -f "$STATE_DIR/current_eta" ]] && echo "ETA     : $(cat "$STATE_DIR/current_eta")"
-      [[ -f "$STATE_DIR/current_folder" ]] && echo "Current : $(cat "$STATE_DIR/current_folder")"
+      echo "Progress: ${CURRENT_PCT}%"
+      echo "Speed   : ${CURRENT_SPEED}"
+      echo "ETA     : ${CURRENT_ETA}"
+      echo "Files   : ${FILES_PROGRESS}"
+      echo "Current : ${CURRENT_FOLDER}"
+      echo "Overall : ${OVERALL_PCT}%"
       [[ -f "$STOP_FILE" ]] && echo "Stop    : requested after current successful folder"
       [[ -f "$STOP_NOW_FILE" ]] && echo "Stop    : immediate stop requested"
-
-      echo
-      echo "---- Last log ----"
-      tail -n 10 "$LOG_FILE"
       exit 0
     else
       echo "PID exists but not running"
@@ -138,13 +206,94 @@ DEST="/mnt/${DEST_DISK}/${RELATIVE_PATH}"
 mkdir -p "$DEST"
 
 # ==============================
+# SIZE CONVERSION
+# ==============================
+
+to_bytes() {
+  num=${1::-1}
+  unit=${1: -1}
+
+  case "$unit" in
+    G) echo $((num * 1024 * 1024 * 1024)) ;;
+    M) echo $((num * 1024 * 1024)) ;;
+    T) echo $((num * 1024 * 1024 * 1024 * 1024)) ;;
+  esac
+}
+
+to_human_size() {
+  local bytes="$1"
+
+  if (( bytes >= 1024 * 1024 * 1024 * 1024 )); then
+    awk -v b="$bytes" 'BEGIN { printf "%.1fT", b / 1024 / 1024 / 1024 / 1024 }'
+  elif (( bytes >= 1024 * 1024 * 1024 )); then
+    awk -v b="$bytes" 'BEGIN { printf "%.1fG", b / 1024 / 1024 / 1024 }'
+  elif (( bytes >= 1024 * 1024 )); then
+    awk -v b="$bytes" 'BEGIN { printf "%.1fM", b / 1024 / 1024 }'
+  elif (( bytes >= 1024 )); then
+    awk -v b="$bytes" 'BEGIN { printf "%.1fK", b / 1024 }'
+  else
+    printf "%sB" "$bytes"
+  fi
+}
+
+THRESHOLD_BYTES=$(to_bytes "$THRESHOLD")
+
+# ==============================
+# PRE-FLIGHT SCAN
+# ==============================
+
+TOTAL_BYTES=0
+MOVE_COUNT=0
+MOVE_DIRS=()
+
+while IFS= read -r -d '' DIR; do
+  SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
+  if (( SIZE_BYTES >= THRESHOLD_BYTES )); then
+    MOVE_DIRS+=("$DIR")
+    MOVE_COUNT=$((MOVE_COUNT + 1))
+    TOTAL_BYTES=$((TOTAL_BYTES + SIZE_BYTES))
+  fi
+done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0)
+
+if (( MOVE_COUNT == 0 )); then
+  echo "No folders meet the size threshold."
+  exit 0
+fi
+
+echo "$TOTAL_BYTES" > "$STATE_DIR/total_bytes"
+echo 0 > "$STATE_DIR/completed_bytes"
+
+# ==============================
+# CONFIRM
+# ==============================
+
+if [[ "${BIGMOVE_CONFIRMED:-0}" != "1" ]]; then
+  echo "Folders that will be moved from $SRC to $DEST:"
+  for DIR in "${MOVE_DIRS[@]}"; do
+    NAME=$(basename "$DIR")
+    SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
+    printf "  - %s (%s)\n" "$NAME" "$(to_human_size "$SIZE_BYTES")"
+  done
+  echo
+  read -r -p "Proceed with moving these folders? [y/N] " CONFIRM
+  case "$CONFIRM" in
+    y|Y|yes|YES)
+      ;;
+    *)
+      echo "Cancelled."
+      exit 0
+      ;;
+  esac
+fi
+
+# ==============================
 # BACKGROUND LAUNCH
 # ==============================
 
 if [[ "$MODE" != "--foreground" ]]; then
   echo "Starting ${APP_NAME} in background..."
 
-  nohup bash "$0" "$@" --foreground > "$LOG_FILE" 2>&1 &
+  nohup env BIGMOVE_CONFIRMED=1 bash "$0" "$@" --foreground > "$LOG_FILE" 2>&1 &
 
   PID=$!
   echo "$PID" > "$PID_FILE"
@@ -163,55 +312,26 @@ rm -f "$STOP_FILE"
 rm -f "$STOP_NOW_FILE"
 rm -f "$RSYNC_PID_FILE"
 rm -f "$RSYNC_FIFO"
+echo "0" > "$STATE_DIR/current_pct"
+echo "-" > "$STATE_DIR/current_speed"
+echo "-" > "$STATE_DIR/current_eta"
+echo "-" > "$STATE_DIR/current_files"
+echo "-" > "$STATE_DIR/current_folder"
+echo "0" > "$STATE_DIR/current_size_bytes"
+echo "0" > "$STATE_DIR/overall_pct"
 echo "START $(date)" > "$STATUS_FILE"
-
-# ==============================
-# SIZE CONVERSION
-# ==============================
-
-to_bytes() {
-  num=${1::-1}
-  unit=${1: -1}
-
-  case "$unit" in
-    G) echo $((num * 1024 * 1024 * 1024)) ;;
-    M) echo $((num * 1024 * 1024)) ;;
-    T) echo $((num * 1024 * 1024 * 1024 * 1024)) ;;
-  esac
-}
-
-THRESHOLD_BYTES=$(to_bytes "$THRESHOLD")
-
-# ==============================
-# TOTAL SIZE SCAN
-# ==============================
-
-TOTAL_BYTES=0
-
-while IFS= read -r -d '' DIR; do
-  SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
-  if (( SIZE_BYTES >= THRESHOLD_BYTES )); then
-    TOTAL_BYTES=$((TOTAL_BYTES + SIZE_BYTES))
-  fi
-done < <(find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0)
-
-echo "$TOTAL_BYTES" > "$STATE_DIR/total_bytes"
-echo 0 > "$STATE_DIR/completed_bytes"
 
 # ==============================
 # PROCESS
 # ==============================
 
-find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' DIR; do
+for DIR in "${MOVE_DIRS[@]}"; do
 
   NAME=$(basename "$DIR")
   SIZE_BYTES=$(du -s --block-size=1 "$DIR" | awk '{print $1}')
 
-  if (( SIZE_BYTES < THRESHOLD_BYTES )); then
-    continue
-  fi
-
   echo "$NAME" > "$STATE_DIR/current_folder"
+  echo "$SIZE_BYTES" > "$STATE_DIR/current_size_bytes"
 
   echo "Processing: $NAME" | tee "$STATUS_FILE"
 
@@ -221,16 +341,22 @@ find "$SRC" -mindepth 1 -maxdepth 1 -type d -print0 | while IFS= read -r -d '' D
 
   # Feed rsync output through a FIFO so we can both log/progress-parse it and keep
   # the real rsync PID available for --stop-now to interrupt directly.
-  tee -a "$LOG_FILE" < "$RSYNC_FIFO" | while read -r line; do
+  tee -a "$LOG_FILE" < "$RSYNC_FIFO" | tr '\r' '\n' | while read -r line; do
     if [[ "$line" =~ ([0-9,]+)[[:space:]]+([0-9]+)%[[:space:]]+([0-9.]+[A-Za-z/]+)[[:space:]]+([0-9:]+) ]]; then
       echo "${BASH_REMATCH[2]}" > "$STATE_DIR/current_pct"
       echo "${BASH_REMATCH[3]}" > "$STATE_DIR/current_speed"
       echo "${BASH_REMATCH[4]}" > "$STATE_DIR/current_eta"
+      if [[ "$line" =~ to-chk=([0-9]+)/([0-9]+) ]]; then
+        REMAINING="${BASH_REMATCH[1]}"
+        TOTAL_FILES="${BASH_REMATCH[2]}"
+        CHECKED_FILES=$((TOTAL_FILES - REMAINING))
+        echo "${CHECKED_FILES}/${TOTAL_FILES} checked" > "$STATE_DIR/current_files"
+      fi
     fi
   done &
   READER_PID=$!
 
-  rsync -a --info=progress2 --no-inc-recursive \
+  rsync -a --info=progress2 --outbuf=L --no-inc-recursive \
     --partial --append-verify --inplace \
     "$DIR/" "$DEST/$NAME/" > "$RSYNC_FIFO" 2>&1 &
   RSYNC_PID=$!

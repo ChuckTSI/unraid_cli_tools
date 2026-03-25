@@ -37,9 +37,10 @@ Given:
 `bigmove` will:
 
 1. scan the top-level folders under the source path
-2. copy only folders at or above the requested size
-3. verify source and destination folder sizes match
-4. delete the source folder only after a successful verified copy
+2. list the folders that meet the requested size threshold and ask for confirmation
+3. copy only folders at or above the requested size
+4. verify source and destination folder sizes match
+5. delete the source folder only after a successful verified copy
 
 The unit of work is the next top-level folder under the path you provide.
 
@@ -89,6 +90,21 @@ Check status:
 /usr/local/bin/bigmove --status
 ```
 
+For a live view:
+
+```bash
+watch -n1 /usr/local/bin/bigmove --status
+```
+
+Tracked status fields:
+
+- current folder progress percent
+- transfer speed
+- ETA
+- file-list progress from rsync `to-chk`
+- current folder name
+- overall progress across the selected move set
+
 Graceful stop after the next top-level folder finishes copying successfully:
 
 ```bash
@@ -127,6 +143,7 @@ BIGMOVE_LOG_FILE=/mnt/cache/appdata/bigmove/bigmove.log \
 
 `bigmove` is intentionally conservative:
 
+- it shows the folders selected for moving and waits for confirmation before it starts
 - it only deletes source data after a completed copy and a matching size check
 - `--stop` waits for the current top-level folder to finish cleanly
 - `--stop-now` stops faster by interrupting the current transfer without deleting the source
