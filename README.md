@@ -32,6 +32,32 @@ Use the tool-specific README for:
 - runtime file locations
 - safety behavior
 
+### `diskbrain`
+
+Selects the best Unraid disk for a target subfolder using free-space and fill-level scoring.
+
+Source script path:
+
+- [`boot/config/scripts/diskbrain`](./boot/config/scripts/diskbrain)
+
+Install note:
+
+- copy it from `/boot/config/scripts/diskbrain` to `/usr/local/bin/diskbrain`
+- run `chmod +x /usr/local/bin/diskbrain`
+- put those commands in `/boot/config/go` for persistence across reboot
+
+Detailed README:
+
+- [`docs/diskbrain/README.md`](./docs/diskbrain/README.md)
+
+Use the tool-specific README for:
+
+- what the tool does
+- usage and examples
+- scoring behavior
+- subfolder path requirements
+- output details
+
 ## Repository Direction
 
 This repository is meant to grow into a set of simple, dependable Unraid-focused tools.
