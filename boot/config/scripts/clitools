@@ -1,0 +1,67 @@
+#!/bin/bash
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  clitools <tool> [args...]
+  clitools --list
+  clitools --help
+
+Available tools:
+  arrayheat
+  bigmove
+  diskbrain
+
+Examples:
+  clitools arrayheat
+  clitools diskbrain TV 40G
+  clitools bigmove disk1 disk2 100G TV
+
+If a tool is missing required arguments, clitools forwards to that tool so you
+see its native usage output.
+EOF
+  exit 1
+}
+
+list_tools() {
+  printf "%s\n" arrayheat bigmove diskbrain
+}
+
+case "${1:-}" in
+  ""|--help|-h)
+    usage
+    ;;
+  --list)
+    list_tools
+    exit 0
+    ;;
+esac
+
+TOOL="$1"
+shift || true
+
+case "$TOOL" in
+  arrayheat|bigmove|diskbrain)
+    TOOL_PATH="$SCRIPT_DIR/$TOOL"
+    ;;
+  *)
+    echo "Unknown tool: $TOOL" >&2
+    echo >&2
+    usage
+    ;;
+esac
+
+if [[ ! -f "$TOOL_PATH" ]]; then
+  echo "Tool not found: $TOOL_PATH" >&2
+  exit 1
+fi
+
+if [[ -x "$TOOL_PATH" ]]; then
+  exec "$TOOL_PATH" "$@"
+fi
+
+exec bash "$TOOL_PATH" "$@"

@@ -6,6 +6,30 @@ This repository holds focused utilities that solve real operational problems on 
 
 ## Tools
 
+## Wrapper Entry Point
+
+If the individual tool names are hard to remember, use the shared wrapper:
+
+- [`boot/config/scripts/clitools`](./boot/config/scripts/clitools)
+
+Examples:
+
+- `clitools arrayheat`
+- `clitools diskbrain TV 40G`
+- `clitools bigmove disk1 disk2 100G TV`
+
+Install note:
+
+- copy `/boot/config/scripts/clitools` to `/usr/local/bin/clitools`
+- run `chmod +x /usr/local/bin/clitools`
+- put those commands in `/boot/config/go` for persistence across reboot
+
+Behavior note:
+
+- `clitools` forwards arguments directly to the selected tool
+- if a tool is missing required arguments, you will see that tool's normal usage output
+- `clitools --list` shows the available wrapped tools
+
 ### `bigmove`
 
 Moves large top-level folders from one Unraid disk to another under a shared relative path.
@@ -18,6 +42,7 @@ Install note:
 
 - copy it from `/boot/config/scripts/bigmove` to `/usr/local/bin/bigmove`
 - run `chmod +x /usr/local/bin/bigmove`
+- optional: install `clitools` and run it as `clitools bigmove ...`
 - put those commands in `/boot/config/go` for persistence across reboot
 
 Detailed README:
@@ -44,6 +69,7 @@ Install note:
 
 - copy it from `/boot/config/scripts/diskbrain` to `/usr/local/bin/diskbrain`
 - run `chmod +x /usr/local/bin/diskbrain`
+- optional: install `clitools` and run it as `clitools diskbrain ...`
 - put those commands in `/boot/config/go` for persistence across reboot
 
 Detailed README:
@@ -70,6 +96,7 @@ Install note:
 
 - copy it from `/boot/config/scripts/arrayheat` to `/usr/local/bin/arrayheat`
 - run `chmod +x /usr/local/bin/arrayheat`
+- optional: install `clitools` and run it as `clitools arrayheat`
 - make sure `sysstat` is installed so `iostat` is available
 - put the copy and chmod commands in `/boot/config/go` for persistence across reboot
 

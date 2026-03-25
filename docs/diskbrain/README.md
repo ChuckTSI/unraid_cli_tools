@@ -25,6 +25,12 @@ chmod +x /usr/local/bin/diskbrain
 
 Put those commands in `/boot/config/go` so the install persists across reboot.
 
+If you also install the shared wrapper, you can run the same tool as:
+
+```bash
+clitools diskbrain TV 40G
+```
+
 ## What `diskbrain` Does
 
 Given:

@@ -25,6 +25,12 @@ chmod +x /usr/local/bin/arrayheat
 
 Put those commands in `/boot/config/go` so the install persists across reboot.
 
+If you also install the shared wrapper, you can run the same tool as:
+
+```bash
+clitools arrayheat
+```
+
 `arrayheat` requires `iostat`, which is provided by `sysstat`.
 
 If `iostat` is missing, the script exits with:

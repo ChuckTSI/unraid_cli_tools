@@ -25,6 +25,12 @@ chmod +x /usr/local/bin/bigmove
 
 Put those commands in `/boot/config/go` so the install persists across reboot.
 
+If you also install the shared wrapper, you can run the same tool as:
+
+```bash
+clitools bigmove disk1 disk2 100G TV
+```
+
 ## What `bigmove` Does
 
 Given:
